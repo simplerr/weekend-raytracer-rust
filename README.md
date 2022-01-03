@@ -4,4 +4,4 @@ An implementation of Peter Shirley's [Ray Tracing in One Weekend](https://raytra
 
 ## Building and running
 
-`cargo run --release`
+`cargo run --release > image.ppm ; ffmpeg -y -i image.ppm image.png`

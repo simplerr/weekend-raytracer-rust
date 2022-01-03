@@ -1,53 +1,11 @@
 #[allow(unused_imports, dead_code)]
-mod utopian_math;
+mod vector_math;
 
 #[allow(dead_code)]
-use utopian_math::*;
+use vector_math::*;
 
 use std::rc::Rc;
 use rand::Rng;
-
-fn vector_tests() {
-    let a = Vec3 {
-        x: 1.0,
-        y: 2.0,
-        z: 3.0
-    };
-
-    dbg!(&a);
-    println!("Length squared: {}", a.length_squared());
-    println!("Length: {}", a.length());
-
-    let b = Vec3::default();
-    dbg!(&b);
-
-    let c = vec3(10.0, 20.0, 30.0);
-    dbg!(&c);
-
-    let mut d = a + c;
-    d = d - a - a + vec3(100.0, 200.0, 300.0);
-    dbg!(&d);
-
-    d = d + 2.0;
-    d = d - 20.0;
-    dbg!(&d);
-
-    d = d * 2.0;
-    dbg!(&d);
-
-    let dot_result = c.dot(c);
-    dbg!(dot_result);
-
-    let cross_result = c.cross(d);
-    dbg!(cross_result);
-
-    if d != a {
-        println!("Equal!");
-    }
-    else {
-        println!("Not Equal!");
-    }
-}
 
 fn random_float(min: f32, max: f32) -> f32 {
     rand::thread_rng().gen_range(min..max)
@@ -180,6 +138,12 @@ struct Ray {
     dir: Vec3,
 }
 
+impl Ray {
+    fn at(&self, t: f32) -> Vec3 {
+        self.origin + self.dir * t
+    }
+}
+
 struct HitRecord {
     pos: Vec3,
     normal: Vec3,
@@ -188,15 +152,79 @@ struct HitRecord {
     material: Rc<dyn Material>,
 }
 
+impl HitRecord {
+    fn set_face_normal(&mut self, ray: &Ray, outward_normal: Vec3) {
+        self.front_face = ray.dir.dot(outward_normal) < 0.0;
+
+        self.normal = match self.front_face {
+            true => outward_normal,
+            false => outward_normal * vec3(-1.0, -1.0, -1.0),
+        };
+    }
+}
+
 struct Sphere {
     center: Vec3,
     radius: f32,
     material: Rc<dyn Material>,
 }
 
+impl Sphere {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let oc = ray.origin - self.center;
+        let a = ray.dir.length_squared();
+        let half_b = oc.dot(ray.dir);
+        let c = oc.length_squared() - self.radius * self.radius;
+        let discriminant = half_b * half_b - a * c;
+
+        if discriminant < 0.0 {
+            return None;
+        }
+
+        let sqrtd = discriminant.sqrt();
+
+        let mut root = (-half_b - sqrtd) / a;
+        if root < t_min || t_max < root {
+            root = (-half_b + sqrtd) / a;
+            if root < t_min || t_max < root {
+                return None;
+            }
+        }
+
+        let mut hit_record = HitRecord {
+            t: root,
+            pos: ray.at(root),
+            normal: vec3(0.0, 0.0, 0.0),
+            front_face: false,
+            material: Rc::clone(&self.material),
+        };
+
+        let outward_normal = (hit_record.pos - self.center) / self.radius;
+        hit_record.set_face_normal(ray, outward_normal);
+
+        return Some(hit_record);
+    }
+}
+
 #[derive(Default)]
 struct World {
     objects: Vec<Sphere>,
+}
+
+impl World {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let mut temp_record = None;
+        let mut closest_hit = t_max;
+
+        for object in &self.objects {
+            if let Some(rec) = object.hit(ray, t_min, closest_hit) {
+                closest_hit = rec.t;
+                temp_record = Some(rec);
+            }
+        }
+
+        temp_record
+    }
 }
 
 struct Camera {
@@ -247,79 +275,7 @@ impl Camera {
     }
 }
 
-impl Ray {
-    fn at(&self, t: f32) -> Vec3 {
-        self.origin + self.dir * t
-    }
-}
-
-
-impl HitRecord {
-    fn set_face_normal(&mut self, ray: &Ray, outward_normal: Vec3) {
-        self.front_face = ray.dir.dot(outward_normal) < 0.0;
-
-        self.normal = match self.front_face {
-            true => outward_normal,
-            false => outward_normal * vec3(-1.0, -1.0, -1.0),
-        };
-    }
-}
-
-impl Sphere {
-    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
-        let oc = ray.origin - self.center;
-        let a = ray.dir.length_squared();
-        let half_b = oc.dot(ray.dir);
-        let c = oc.length_squared() - self.radius * self.radius;
-        let discriminant = half_b * half_b - a * c;
-
-        if discriminant < 0.0 {
-            return None;
-        }
-
-        let sqrtd = discriminant.sqrt();
-
-        let mut root = (-half_b - sqrtd) / a;
-        if root < t_min || t_max < root {
-            root = (-half_b + sqrtd) / a;
-            if root < t_min || t_max < root {
-                return None;
-            }
-        }
-
-        let mut hit_record = HitRecord {
-            t: root,
-            pos: ray.at(root),
-            normal: vec3(0.0, 0.0, 0.0),
-            front_face: false,
-            material: Rc::clone(&self.material),
-        };
-
-        let outward_normal = (hit_record.pos - self.center) / self.radius;
-        hit_record.set_face_normal(ray, outward_normal);
-
-        return Some(hit_record);
-    }
-}
-
-impl World {
-    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
-        let mut temp_record = None;
-        let mut closest_hit = t_max;
-
-        for object in &self.objects {
-            if let Some(rec) = object.hit(ray, t_min, closest_hit) {
-                closest_hit = rec.t;
-                temp_record = Some(rec);
-            }
-        }
-
-        temp_record
-    }
-}
-
 fn ray_color(ray: &Ray, world: &World, depth: i32) -> Vec3 {
-
     if depth < 0 {
         return vec3(0.0, 0.0, 0.0);
     }
@@ -415,7 +371,6 @@ fn create_random_scene() -> World {
 }
 
 fn main() {
-    //vector_tests();
     let aspect_ratio = 3.0 / 2.0;
     let width = 1200;
     let height = (width as f32 / aspect_ratio) as u32;
