@@ -86,7 +86,7 @@ impl Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool {
+    fn scatter(&self, _input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool {
         // Note: randomPointInUnitSphere() can be replaced by other distributions,
         // see chapter 8.5 in the tutorial.
         let mut scatter_direction = hit_record.normal + random_point_in_unit_sphere();
@@ -135,9 +135,9 @@ impl Dielectric {
         Dielectric { ir }
     }
 
-    fn calc_reflectance(&self, cosine: f32, refIdx: f32) -> f32 {
+    fn calc_reflectance(&self, cosine: f32, ref_idx: f32) -> f32 {
         // Schlick's approximation
-        let mut r0 = (1.0 - refIdx) / (1.0 + refIdx);
+        let mut r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
         r0 = r0 * r0;
         return r0 + (1.0 - r0) * ((1.0 - cosine).powf(5.0))
     }
@@ -206,7 +206,6 @@ struct Camera {
     lower_left_corner: Vec3,
     u: Vec3,
     v: Vec3,
-    w: Vec3,
     lens_radius: f32,
 }
 
@@ -217,7 +216,6 @@ impl Camera {
         let viewport_height = 2.0 * h;
         let viewport_width = viewport_height * aspect_ratio;
 
-        let focal_length = 1.0;
         let up = vec3(0.0, 1.0, 0.0);
 
         let w = (look_from - look_at).normalize();
@@ -231,7 +229,6 @@ impl Camera {
         Camera {
             u,
             v,
-            w,
             origin,
             horizontal,
             vertical,
@@ -374,17 +371,8 @@ fn render(camera: &Camera, world: &World, width: u32, height: u32, samples_per_p
     eprintln!("\nRendering finished!");
 }
 
-fn main() {
-    //vector_tests();
-    let aspect_ratio = 3.0 / 2.0;
-    let width = 1200;
-    let height = (width as f32 / aspect_ratio) as u32;
-    let samples_per_pixel = 10;
-    let max_depth: i32 = 50;
-    let _num_threads = 16;
-
-    let camera = Camera::new(vec3(13.0, 2.0, 3.0), vec3(0.0, 0.0, 0.0), 20.0, aspect_ratio, 0.1, 10.0);
-    let mut world: World = World::default();
+fn create_random_scene() -> World {
+    let mut world = World::default();
 
     let ground_material = Rc::new(Lambertian::new(vec3(0.5, 0.5, 0.5)));
     let lambertian_material = Rc::new(Lambertian::new(vec3(0.4, 0.2, 0.1)));
@@ -395,6 +383,48 @@ fn main() {
     world.objects.push(Sphere { center: vec3(-4.0, 1.0, 0.0), radius: 1.0, material: lambertian_material });
     world.objects.push(Sphere { center: vec3(0.0, 1.0, 0.0), radius: 1.0, material: dielectric_material });
     world.objects.push(Sphere { center: vec3(4.0, 1.0, 0.0), radius: 1.0, material: metal_material });
+
+    for a in -11..11 {
+        for b in -11..11 {
+            let choose_mat = random_float(0.0, 1.0);
+            let center = vec3((a as f32) + 0.9 * random_float(0.0, 1.0), 0.2, (b as f32) + 0.9 * random_float(0.0, 1.0));
+
+            if (center - vec3(4.0, 0.2, 0.0)).length() > 0.9 {
+                if choose_mat < 0.8 {
+                    let color1 = vec3(random_float(0.0, 1.0), random_float(0.0, 1.0), random_float(0.0, 1.0));
+                    let color2 = vec3(random_float(0.0, 1.0), random_float(0.0, 1.0), random_float(0.0, 1.0));
+                    let albedo = color1 * color2;
+                    let material = Rc::new(Lambertian::new(albedo));
+                    world.objects.push(Sphere { center, radius: 0.2, material });
+                }
+                else if choose_mat < 0.95 {
+                    let albedo = vec3(random_float(0.5, 1.0), random_float(0.5, 1.0), random_float(0.5, 1.0));
+                    let fuzz = random_float(0.0, 0.5);
+                    let material = Rc::new(Metal::new(albedo, fuzz));
+                    world.objects.push(Sphere { center, radius: 0.2, material });
+                }
+                else {
+                    let material = Rc::new(Dielectric::new(1.5));
+                    world.objects.push(Sphere { center, radius: 0.2, material });
+                };
+            }
+        }
+    }
+
+    world
+}
+
+fn main() {
+    //vector_tests();
+    let aspect_ratio = 3.0 / 2.0;
+    let width = 1200;
+    let height = (width as f32 / aspect_ratio) as u32;
+    let samples_per_pixel = 10;
+    let max_depth: i32 = 50;
+    let _num_threads = 16;
+
+    let camera = Camera::new(vec3(13.0, 2.0, 3.0), vec3(0.0, 0.0, 0.0), 20.0, aspect_ratio, 0.1, 10.0);
+    let world = create_random_scene();
 
     render(&camera, &world, width, height, samples_per_pixel, max_depth);
 }
