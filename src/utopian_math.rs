@@ -52,6 +52,18 @@ impl Vec3 {
             z: self.z.sqrt(),
         }
     }
+    
+    pub fn reflect(&self, normal: Vec3) -> Vec3 {
+        *self - 2.0 * self.dot(normal) * normal
+    }
+
+    pub fn refract(self, n: Vec3, etai_over_etat: f32) -> Vec3 {
+        // Snell's law
+        let cos_theta = ((-1.0) * self).dot(n).min(1.0);
+        let r_out_perp = etai_over_etat * (self + cos_theta * n);
+        let r_out_parallel = -(1.0 - r_out_perp.length().powi(2)).abs().sqrt() * n;
+        r_out_perp + r_out_parallel
+    }
 }
 
 impl Add<Vec3> for Vec3 {

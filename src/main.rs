@@ -4,6 +4,7 @@ mod utopian_math;
 #[allow(dead_code)]
 use utopian_math::*;
 
+use std::rc::Rc;
 use rand::Rng;
 
 fn vector_tests() {
@@ -70,23 +71,127 @@ fn random_point_in_unit_disc() -> Vec3 {
     }
 }
 
+trait Material {
+    fn scatter(&self, input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool;
+}
+
+struct Lambertian {
+    albedo: Vec3,
+}
+
+impl Lambertian {
+    fn new(albedo: Vec3) -> Lambertian {
+        Lambertian { albedo }
+    }
+}
+
+impl Material for Lambertian {
+    fn scatter(&self, input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool {
+        // Note: randomPointInUnitSphere() can be replaced by other distributions,
+        // see chapter 8.5 in the tutorial.
+        let mut scatter_direction = hit_record.normal + random_point_in_unit_sphere();
+
+        if scatter_direction.length() < f32::EPSILON {
+            scatter_direction = hit_record.normal;
+        }
+
+        *scattered_ray = Ray { origin: hit_record.pos, dir: scatter_direction };
+        *attenuation = self.albedo;
+
+        true
+    }
+}
+
+struct Metal {
+    albedo: Vec3,
+    fuzz: f32,
+}
+
+impl Metal {
+    fn new(albedo: Vec3, fuzz: f32) -> Metal {
+        Metal { albedo, fuzz }
+    }
+}
+
+impl Material for Metal {
+    fn scatter(&self, input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool {
+        let reflected = input_ray.dir.normalize().reflect(hit_record.normal);
+        *scattered_ray = Ray {
+            origin: hit_record.pos,
+            dir: reflected + self.fuzz * random_point_in_unit_sphere(),
+        };
+        *attenuation = self.albedo;
+
+        scattered_ray.dir.dot(hit_record.normal) > 0.0
+    }
+}
+
+struct Dielectric {
+    ir: f32,
+}
+
+impl Dielectric {
+    fn new(ir: f32) -> Dielectric {
+        Dielectric { ir }
+    }
+
+    fn calc_reflectance(&self, cosine: f32, refIdx: f32) -> f32 {
+        // Schlick's approximation
+        let mut r0 = (1.0 - refIdx) / (1.0 + refIdx);
+        r0 = r0 * r0;
+        return r0 + (1.0 - r0) * ((1.0 - cosine).powf(5.0))
+    }
+}
+
+impl Material for Dielectric {
+    fn scatter(&self, input_ray: &Ray, hit_record: &HitRecord, attenuation: &mut Vec3, scattered_ray: &mut Ray) -> bool {
+        *attenuation = vec3(1.0, 1.0, 1.0);
+
+        let refraction_ratio = match hit_record.front_face {
+            true => 1.0 / self.ir,
+            false => self.ir,
+        };
+
+        let normalized_direction = input_ray.dir.normalize();
+        let cos_theta = (-1.0 * normalized_direction).dot(hit_record.normal).min(1.0);
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+        let cannot_refract = refraction_ratio * sin_theta > 1.0;
+        let mut direction = Vec3::default();
+
+        if cannot_refract || self.calc_reflectance(cos_theta, refraction_ratio) > random_float(0.0, 1.0) {
+            direction = normalized_direction.reflect(hit_record.normal);
+        }
+        else {
+            direction = normalized_direction.refract(hit_record.normal, refraction_ratio);
+        }
+
+        *scattered_ray = Ray {
+            origin: hit_record.pos,
+            dir: direction,
+        };
+
+        true
+    }
+}
+
 struct Ray {
     origin: Vec3,
     dir: Vec3,
 }
 
-#[derive(Default)]
 struct HitRecord {
     pos: Vec3,
     normal: Vec3,
     t: f32,
     front_face: bool,
+    material: Rc<dyn Material>,
 }
 
-#[derive(Debug)]
 struct Sphere {
     center: Vec3,
     radius: f32,
+    material: Rc<dyn Material>,
 }
 
 #[derive(Default)]
@@ -164,7 +269,7 @@ impl HitRecord {
 }
 
 impl Sphere {
-    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32, hit_record: &mut HitRecord) -> bool {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let oc = ray.origin - self.center;
         let a = ray.dir.length_squared();
         let half_b = oc.dot(ray.dir);
@@ -172,7 +277,7 @@ impl Sphere {
         let discriminant = half_b * half_b - a * c;
 
         if discriminant < 0.0 {
-            return false;
+            return None;
         }
 
         let sqrtd = discriminant.sqrt();
@@ -181,48 +286,63 @@ impl Sphere {
         if root < t_min || t_max < root {
             root = (-half_b + sqrtd) / a;
             if root < t_min || t_max < root {
-                return false;
+                return None;
             }
         }
 
-        hit_record.t = root;
-        hit_record.pos = ray.at(hit_record.t);
+        let mut hit_record = HitRecord {
+            t: root,
+            pos: ray.at(root),
+            normal: vec3(0.0, 0.0, 0.0),
+            front_face: false,
+            material: Rc::clone(&self.material),
+        };
+
         let outward_normal = (hit_record.pos - self.center) / self.radius;
         hit_record.set_face_normal(ray, outward_normal);
-        return true;
+
+        return Some(hit_record);
     }
 }
 
 impl World {
-    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32, hit_record: &mut HitRecord) -> bool {
-        let mut hit_anything = false;
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let mut temp_record = None;
         let mut closest_hit = t_max;
 
         for object in &self.objects {
-            let mut temp_record = HitRecord::default();
-            if object.hit(ray, t_min, closest_hit, &mut temp_record) {
-                hit_anything = true;
-                closest_hit = temp_record.t;
-                *hit_record = temp_record;
+            if let Some(rec) = object.hit(ray, t_min, closest_hit) {
+                closest_hit = rec.t;
+                temp_record = Some(rec);
             }
         }
 
-        hit_anything
+        temp_record
     }
 }
 
-fn ray_color(ray: &Ray, world: &World) -> Vec3 {
-    let mut hit_record = HitRecord::default();
+fn ray_color(ray: &Ray, world: &World, depth: i32) -> Vec3 {
 
-    if world.hit(ray, 0.0, std::f32::INFINITY, &mut hit_record) {
-        return 0.5 * (hit_record.normal + 1.0);
+    if depth < 0 {
+        return vec3(0.0, 0.0, 0.0);
+    }
+
+    let shadow_acne_constant = 0.001;
+    if let Some(rec) = world.hit(ray, shadow_acne_constant, 100.0) {
+        let mut attenuation = Vec3::default();
+        let mut scattered_ray = Ray { origin: vec3(0.0, 0.0, 0.0), dir: vec3(0.0, 0.0, 0.0) };
+        if rec.material.scatter(ray, &rec, &mut attenuation, &mut scattered_ray) {
+            return attenuation * ray_color(&scattered_ray, &world, depth - 1);
+        }
+
+        return vec3(0.0, 0.0, 0.0);
     }
 
     let t = 0.5 * (ray.dir.normalize().y + 1.0);
     (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0)
 }
 
-fn render(camera: &Camera, world: &World, width: u32, height: u32, samples_per_pixel: u32, max_depth: u32) {
+fn render(camera: &Camera, world: &World, width: u32, height: u32, samples_per_pixel: u32, max_depth: i32) {
     print!("P3\n{} {}\n255\n", width, height);
 
     eprintln!("Rendering {}x{} image", width, height);
@@ -234,7 +354,7 @@ fn render(camera: &Camera, world: &World, width: u32, height: u32, samples_per_p
                 let u = (x as f32 + random_float(0.0, 1.0)) / ((width - 1) as f32);
                 let v = (y as f32 + random_float(0.0, 1.0)) / ((height - 1) as f32);
                 let ray = camera.get_ray(u, v);
-                color = color + ray_color(&ray, &world);
+                color = color + ray_color(&ray, &world, max_depth);
             }
 
             color = color / (samples_per_pixel as f32);
@@ -260,16 +380,21 @@ fn main() {
     let width = 1200;
     let height = (width as f32 / aspect_ratio) as u32;
     let samples_per_pixel = 10;
-    let max_depth = 50;
+    let max_depth: i32 = 50;
     let _num_threads = 16;
 
     let camera = Camera::new(vec3(13.0, 2.0, 3.0), vec3(0.0, 0.0, 0.0), 20.0, aspect_ratio, 0.1, 10.0);
     let mut world: World = World::default();
 
-    world.objects.push(Sphere { center: vec3(0.0, -1000.0, 0.0), radius: 1000.0 });
-    world.objects.push(Sphere { center: vec3(-4.0, 1.0, 0.0), radius: 1.0 });
-    world.objects.push(Sphere { center: vec3(0.0, 1.0, 0.0), radius: 1.0 });
-    world.objects.push(Sphere { center: vec3(4.0, 1.0, 0.0), radius: 1.0 });
+    let ground_material = Rc::new(Lambertian::new(vec3(0.5, 0.5, 0.5)));
+    let lambertian_material = Rc::new(Lambertian::new(vec3(0.4, 0.2, 0.1)));
+    let metal_material = Rc::new(Metal::new(vec3(0.7, 0.6, 0.5), 0.0));
+    let dielectric_material = Rc::new(Dielectric::new(1.5));
+
+    world.objects.push(Sphere { center: vec3(0.0, -1000.0, 0.0), radius: 1000.0, material: ground_material });
+    world.objects.push(Sphere { center: vec3(-4.0, 1.0, 0.0), radius: 1.0, material: lambertian_material });
+    world.objects.push(Sphere { center: vec3(0.0, 1.0, 0.0), radius: 1.0, material: dielectric_material });
+    world.objects.push(Sphere { center: vec3(4.0, 1.0, 0.0), radius: 1.0, material: metal_material });
 
     render(&camera, &world, width, height, samples_per_pixel, max_depth);
 }
